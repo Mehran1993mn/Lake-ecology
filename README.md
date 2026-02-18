@@ -197,12 +197,7 @@ Supervised Machine Learning and Deep Learning classification framework.
 - OS: Windows / Linux / macOS  
 
 ---
-## ▶️ Run the Code
 
-```bash
-pip install -r requirements.txt
-python run_reproducibility.py
-## 📊 Results
 
 ## 🔹 Model Performance
 
