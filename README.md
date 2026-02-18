@@ -215,9 +215,9 @@ The machine learning framework achieved robust national-scale classification per
 
 ## 🔹 Multi-Class Classification Performance
 
-![Model Performance](figures/figure4.png)
+![Model Performance](figures/fig1.png)
 
-*Figure 1. Multi-class ecological status classification performance across RF, XGBoost, SVM, ANN, TabNet, and BNN models.*
+*Figure 1. Model performance metrics based on F1-score, accuracy, and Matthews correlation coefficient (MCC). Note that M1, M2, M3, M4, M5, M6, and M7 represent the Bayesian Neural Network, Support Vector Machine, Random Forest, XGBoost, Artificial Neural Network, TabNet, and Ensemble approach, respectively.*
 
 ---
 
