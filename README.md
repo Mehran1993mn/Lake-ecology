@@ -203,3 +203,92 @@ Supervised Machine Learning and Deep Learning classification framework.
 ```bash
 pip install -r requirements.txt
 python run_reproducibility.py
+
+# 📊 Results
+
+## 🔹 Model Performance
+
+The machine learning framework achieved robust national-scale classification performance:
+
+- Best multi-class macro-F1 ≈ **0.65**
+- Binary classification F1 ≈ **0.84**
+- Best calibration achieved by **Bayesian Neural Network (ECE = 0.016)**
+- Nutrient variables (TP, TN, turbidity) dominate predictive performance
+- Moderate class is the most difficult to classify
+- Predictive uncertainty is primarily **aleatoric**
+
+---
+
+## 🔹 Multi-Class Classification Performance
+
+![Model Performance](figures/figure4.png)
+
+*Figure 1. Multi-class ecological status classification performance across RF, XGBoost, SVM, ANN, TabNet, and BNN models.*
+
+---
+
+## 🔹 Feature Importance (SHAP Analysis)
+
+![SHAP Results](figures/figure7.png)
+
+*Figure 2. SHAP summary plots showing dominant environmental drivers of ecological status classification.*
+
+---
+
+## 🔹 Uncertainty Decomposition
+
+![Uncertainty Decomposition](figures/figure8.png)
+
+*Figure 3. Decomposition of predictive uncertainty into aleatoric and epistemic components.*
+
+---
+
+# 📖 Citation
+
+This repository should be cited using a persistent DOI (e.g., Zenodo release).
+
+DOI: **DOI_PENDING**
+
+After publication, update this section with:
+
+
+---
+
+# 📜 License
+
+This project is licensed under the **MIT License**.
+
+See the `LICENSE` file for details.
+
+---
+
+# 🤝 Contribution Guidelines
+
+Contributions that improve the quality, clarity, and reproducibility of this project are welcome.
+
+Please follow these guidelines:
+
+- Open an issue before making major or result-affecting changes
+- Keep pull requests focused and clearly describe changes
+- Follow existing code style and documentation standards
+- Do not modify code or data used to reproduce published results without discussion
+- Ensure workflows remain reproducible (fixed seeds, documented dependencies)
+- Do not commit large or restricted datasets
+- Respect external data licenses (e.g., SYKE data policy)
+
+By contributing, you agree that your work will be released under the project’s license.
+
+---
+
+# 📝 Notes
+
+This repository emphasizes:
+
+- Reproducibility
+- Transparent modeling
+- Uncertainty-aware environmental decision support
+- Clear scientific communication
+
+For Markdown formatting reference:
+
+[Markdown Cheatsheet](https://github.com/adam-p/markdown-here/wiki/markdown-cheatsheet)
