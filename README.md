@@ -227,7 +227,7 @@ The machine learning framework achieved robust national-scale classification per
 
 *Figure 2. SHAP summary plots showing dominant environmental drivers of ecological status classification.*
 
----
+--- 
 
 ## 🔹 Uncertainty Decomposition
 
