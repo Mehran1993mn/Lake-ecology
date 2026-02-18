@@ -174,16 +174,17 @@ Supervised Machine Learning and Deep Learning classification framework.
 
 # 📁 Repository Structure
 
+
+
 | Folder/File | Description |
 |-------------|-------------|
-| `notebooks/` | Analysis notebooks |
-| `inputs/` | Minimal metadata and configuration files |
-| `processed_data/` | Analysis-ready datasets |
-| `model_data/` | Trained models and predictions |
-| `figures/` | Figures used in manuscript |
-| `run_reproducibility.py` | Reproducibility wrapper |
-| `Dockerfile` | Reproducible container |
-| `CITATION.cff` | Citation metadata |
+| notebooks/ | Jupyter notebooks for preprocessing, modeling, and analysis |
+| inputs/ | Raw input data (not included due to size/license restrictions) |
+| processed_data/ | Cleaned and analysis-ready datasets |
+| models/ | Saved trained model files |
+| figures/ | Figures used in manuscript and README |
+| requirements.txt | Python dependencies |
+| README.md | Project documentation ||
 
 ---
 
