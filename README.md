@@ -176,15 +176,16 @@ Supervised Machine Learning and Deep Learning classification framework.
 
 
 
+# 📁 Repository Structure
+
 | Folder/File | Description |
 |-------------|-------------|
-| notebooks/ | Jupyter notebooks for preprocessing, modeling, and analysis |
-| inputs/ | Raw input data (not included due to size/license restrictions) |
-| processed_data/ | Cleaned and analysis-ready datasets |
-| models/ | Saved trained model files |
-| figures/ | Figures used in manuscript and README |
-| requirements.txt | Python dependencies |
-| README.md | Project documentation ||
+| `README.md` | Project overview and documentation |
+| `LICENSE` | Project license (MIT) |
+| `.gitignore` | Specifies files ignored by Git |
+| `figures/` | Figures used in the manuscript and README |
+| `code/` | Core Python scripts for preprocessing and modeling and XGBoost modeling scripts and related outputs |
+
 
 ---
 
