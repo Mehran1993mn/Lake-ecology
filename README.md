@@ -286,7 +286,6 @@ For Markdown formatting reference:
 
 ### ▶️ Run the Code
 
-1. Install required packages:
-
-```xgboost
+```bash
 pip install -r requirements.txt
+python xgboost/your_script_name.py
