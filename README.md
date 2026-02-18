@@ -281,3 +281,11 @@ This repository emphasizes:
 For Markdown formatting reference:
 
 [Markdown Cheatsheet](https://github.com/adam-p/markdown-here/wiki/markdown-cheatsheet)
+
+
+### ▶️ Run the Code
+
+1. Install required packages:
+
+```xgboost
+pip install -r requirements.txt
