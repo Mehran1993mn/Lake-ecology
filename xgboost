@@ -1,0 +1,593 @@
+# ============================================================
+# UPDATED FULL SCRIPT (SCIENTIFICALLY CLEAN CV CALIBRATION)
+# - Uses XGBOOST (as you requested) instead of RandomForest
+# - Keeps your overall structure the same:
+#   1) Optuna tuning (with overfit penalty)
+#   2) 5-fold CV loop + sampler + Platt scaling (NO leakage)
+#   3) Final model on all data (reference)
+#   4) Excel export
+#   5) Plots
+# - Permutation importance:
+#   * computed ONLY on 5-fold OUTER test folds
+#   * 100 repeats
+#   * 95% CI (quantiles)
+# - Hyperparameters:
+#   * includes stronger regularization (reg_alpha, reg_lambda, gamma, min_child_weight)
+#   * includes subsampling (subsample, colsample_bytree)
+# ============================================================
+
+import os
+import numpy as np
+import pandas as pd
+import optuna
+
+from sklearn.base import clone
+from sklearn.model_selection import StratifiedKFold
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.metrics import (
+    classification_report, accuracy_score, precision_score, recall_score,
+    f1_score, confusion_matrix
+)
+from sklearn.inspection import permutation_importance
+from sklearn.calibration import CalibratedClassifierCV
+import matplotlib.pyplot as plt
+
+from imblearn.over_sampling import BorderlineSMOTE, SVMSMOTE
+import smote_variants as sv
+from collections import Counter
+
+from xgboost import XGBClassifier
+
+# ========== USER-EDITABLE SETTINGS ==========
+SAMPLER_TYPE     = "mwmote"   # "borderline", "svm", "mwmote", or "none"
+IMBALANCE_RATIO  = 0.6
+K_NEIGHBORS      = 10
+RANDOM_STATE     = 42
+
+# Optuna trials
+N_TRIALS = 100  # change as you want
+
+# Overfitting penalty settings for Optuna objective
+F1_GAP_THRESHOLD  = 0.2
+GAP_PENALTY_ALPHA = 5.0
+
+# Permutation importance on outer test folds
+PERM_REPEATS = 100
+CI_ALPHA = 0.05  # 95% CI
+
+orig4new_path = r"C:\Users\mehramah\Downloads\manualclassification\databseforecologi\Paper1dataset\dataset\Dataset\Datasenew\finaldatsaet\do\x_with_do_imputed_WITH_tyyppi_onehot.txt"
+output_base   = r"C:\Users\mehramah\Downloads\manualclassification\databseforecologi\Paper1dataset\dataset\xgb"
+os.makedirs(output_base, exist_ok=True)
+excel_path    = os.path.join(output_base, "XGB_4classmodel_results.xlsx")
+
+cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=RANDOM_STATE)
+
+# ========== DATA PREPARATION ==========
+ultimate4 = pd.read_csv(orig4new_path, sep='\t')
+df = ultimate4.dropna()
+
+features = [
+    "tnecology", "tpecology", "turbidityecology", "area_m2",
+    "colorecology", "conductivityecology", "phecology",
+    "wtecology", "DissolvedOxygen", "SECCIDEPTH", "NEWDEPTH",'tyyppi_Lv', 'tyyppi_Kh',
+       'tyyppi_Mh', 'tyyppi_MRh', 'tyyppi_MVh', 'tyyppi_Ph', 'tyyppi_Vh',
+       'tyyppi_PoLa', 'tyyppi_Rh', 'tyyppi_Rk', 'tyyppi_Rr', 'tyyppi_Sh',
+       'tyyppi_SVh'
+]
+target_col = 'ecologystatus'
+
+X = df[features].reset_index(drop=True)
+y = df[target_col].reset_index(drop=True)
+lakecode = df['LakeCode'].reset_index(drop=True)
+
+# --- Label Encoding ---
+le = LabelEncoder()
+y_enc = le.fit_transform(y)
+class_names = le.classes_
+N_CLASSES = len(class_names)
+
+# Choose objective based on classes
+XGB_OBJECTIVE = "multi:softprob" if N_CLASSES > 2 else "binary:logistic"
+
+# ========== ADVANCED SAMPLER HELPERS ==========
+def get_sampler(sampler_type, k_neighbors=5, random_state=42):
+    if sampler_type == "borderline":
+        return BorderlineSMOTE(k_neighbors=k_neighbors, random_state=random_state)
+    elif sampler_type == "svm":
+        return SVMSMOTE(k_neighbors=k_neighbors, random_state=random_state)
+    else:
+        return None  # MWMOTE handled separately
+
+def apply_mwmote_multiclass(X, y, imbalance_ratio=0.6, random_state=42):
+    X = np.asarray(X)
+    y = np.asarray(y)
+    class_counts = Counter(y)
+    majority_count = max(class_counts.values())
+    target_count = int(majority_count * imbalance_ratio)
+
+    X_res_all = [X]
+    y_res_all = [y]
+
+    for cls, count in class_counts.items():
+        if count < target_count:
+            needed = target_count - count
+            binary_y = (y == cls).astype(int)
+            mw = sv.MWMOTE(random_state=random_state)
+            try:
+                X_tmp, y_tmp = mw.sample(X, binary_y)
+                n_orig = len(y)
+                X_new = X_tmp[n_orig:][:needed]
+                y_new = np.full(len(X_new), cls)
+                X_res_all.append(X_new)
+                y_res_all.append(y_new)
+            except Exception as e:
+                print(f"MWMOTE failed for class {cls}: {e}")
+
+    X_bal = np.vstack(X_res_all)
+    y_bal = np.concatenate(y_res_all)
+    return X_bal, y_bal
+
+# ========== CALIBRATION METRICS (ECE + BRIER) ==========
+def multiclass_brier_score(y_true, proba):
+    y_true = np.asarray(y_true)
+    proba = np.asarray(proba)
+    n_classes = proba.shape[1]
+    y_onehot = np.eye(n_classes)[y_true]
+    return np.mean(np.sum((proba - y_onehot) ** 2, axis=1))
+
+def multiclass_ece(y_true, proba, n_bins=10):
+    y_true = np.asarray(y_true)
+    proba = np.asarray(proba)
+    pred = np.argmax(proba, axis=1)
+    conf = proba[np.arange(len(proba)), pred]
+    acc = (pred == y_true).astype(float)
+
+    bin_edges = np.linspace(0.0, 1.0, n_bins + 1)
+    ece = 0.0
+    for i in range(n_bins):
+        lo, hi = bin_edges[i], bin_edges[i+1]
+        if i == 0:
+            mask = (conf >= lo) & (conf <= hi)
+        else:
+            mask = (conf > lo) & (conf <= hi)
+        if not np.any(mask):
+            continue
+        bin_conf = conf[mask].mean()
+        bin_acc = acc[mask].mean()
+        bin_weight = mask.mean()
+        ece += np.abs(bin_acc - bin_conf) * bin_weight
+    return ece
+
+# ========== SAFE CALIBRATOR FACTORY (sklearn compatibility) ==========
+def make_calibrator(estimator, method='sigmoid', cv_inner=3):
+    """
+    Handles sklearn versions:
+      - newer: CalibratedClassifierCV(estimator=..., ...)
+      - older: CalibratedClassifierCV(base_estimator=..., ...)
+    """
+    try:
+        return CalibratedClassifierCV(estimator=estimator, method=method, cv=cv_inner)
+    except TypeError:
+        return CalibratedClassifierCV(base_estimator=estimator, method=method, cv=cv_inner)
+
+# ========== 1) OPTUNA TUNING (XGBOOST with REGULARIZATION) ==========
+def make_objective(X, y, cv, sampler_type, imbalance_ratio, k_neighbors):
+    """
+    Objective returns penalized mean CV macro-F1.
+    Penalize if mean_train_F1 - mean_test_F1 > threshold.
+    NOTE: Train F1 computed on ORIGINAL (non-oversampled) train fold to make gap meaningful.
+    """
+    def objective(trial):
+        params = {
+            # capacity
+            "n_estimators": trial.suggest_int("n_estimators", 400, 2000),
+            "max_depth": trial.suggest_int("max_depth", 2, 10),
+            "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.2, log=True),
+
+            # sampling (regularization)
+            "subsample": trial.suggest_float("subsample", 0.6, 1),
+            "colsample_bytree": trial.suggest_float("colsample_bytree", 0.5, 1),
+
+            # split/leaf regularization
+            "min_child_weight": trial.suggest_float("min_child_weight", 1, 50.0),
+            "gamma": trial.suggest_float("gamma", 0, 15),
+
+            # L1/L2 regularization (strong!)
+            "reg_alpha": trial.suggest_float("reg_alpha", 0.1, 50.0, log=True),
+            "reg_lambda": trial.suggest_float("reg_lambda",0.01, 100.0, log=True),
+
+            # numerical stability
+            "max_delta_step": trial.suggest_float("max_delta_step", 0.0, 10.0),
+
+            # tree growth policy (helps regularization sometimes)
+            "grow_policy": trial.suggest_categorical("grow_policy", ["depthwise", "lossguide"]),
+        }
+
+        # XGB core
+        xgb = XGBClassifier(
+            **params,
+            objective=XGB_OBJECTIVE,
+            eval_metric="mlogloss" if N_CLASSES > 2 else "logloss",
+            n_jobs=-1,
+            random_state=RANDOM_STATE,
+            tree_method="hist",
+            verbosity=0,
+            num_class=N_CLASSES if N_CLASSES > 2 else None
+        )
+
+        pipe = Pipeline([
+            
+            ('xgb', xgb)
+        ])
+
+        train_f1s = []
+        val_f1s = []
+
+        for ti, vi in cv.split(X, y):
+            X_tr, X_val = X.iloc[ti], X.iloc[vi]
+            y_tr, y_val = y[ti], y[vi]
+
+            # ---- Apply sampler ONLY on training fold (for FIT only) ----
+            if sampler_type == "mwmote":
+                X_tr_bal, y_tr_bal = apply_mwmote_multiclass(
+                    X_tr, y_tr, imbalance_ratio=imbalance_ratio, random_state=RANDOM_STATE
+                )
+            elif sampler_type in ("borderline", "svm"):
+                sampler_obj = get_sampler(sampler_type, k_neighbors=k_neighbors, random_state=RANDOM_STATE)
+                if sampler_obj is not None:
+                    X_tr_bal, y_tr_bal = sampler_obj.fit_resample(X_tr, y_tr)
+                else:
+                    X_tr_bal, y_tr_bal = X_tr, y_tr
+            else:
+                X_tr_bal, y_tr_bal = X_tr, y_tr
+
+            pipe.fit(X_tr_bal, y_tr_bal)
+
+            # ---- TRAIN F1 on ORIGINAL (non-oversampled) train fold ----
+            y_pred_tr = pipe.predict(X_tr)
+            train_f1s.append(f1_score(y_tr, y_pred_tr, average='macro', zero_division=0))
+
+            # ---- VALIDATION F1 on held-out fold ----
+            y_pred_val = pipe.predict(X_val)
+            val_f1s.append(f1_score(y_val, y_pred_val, average='macro', zero_division=0))
+
+        mean_train_f1 = float(np.mean(train_f1s))
+        mean_val_f1   = float(np.mean(val_f1s))
+        std_val_f1    = float(np.std(val_f1s))
+        gap = mean_train_f1 - mean_val_f1
+
+        trial.set_user_attr("cv_test_f1_mean", mean_val_f1)
+        trial.set_user_attr("cv_test_f1_std", std_val_f1)
+        trial.set_user_attr("cv_train_f1_mean", mean_train_f1)
+        trial.set_user_attr("cv_f1_gap", gap)
+
+        penalized = mean_val_f1
+        if gap > F1_GAP_THRESHOLD:
+            penalized = max(mean_val_f1 - GAP_PENALTY_ALPHA * (gap - F1_GAP_THRESHOLD), 0.0)
+
+        trial.set_user_attr("cv_penalized_score", penalized)
+        return penalized
+
+    return objective
+
+opt_sampler = optuna.samplers.TPESampler(
+    seed=RANDOM_STATE,
+    n_startup_trials=10,
+    multivariate=True
+)
+
+study = optuna.create_study(direction='maximize', sampler=opt_sampler)
+study.optimize(
+    make_objective(X, y_enc, cv, SAMPLER_TYPE, IMBALANCE_RATIO, K_NEIGHBORS),
+    n_trials=N_TRIALS
+)
+
+best_bayes = study.best_params
+print("Optuna best (penalized CV f1_macro):", f"{study.best_value:.4f}")
+print("Best hyperparams:", best_bayes)
+
+# Best pipeline with Optuna params
+best_pipe = Pipeline([
+    ('scaler', StandardScaler()),
+    ('xgb', XGBClassifier(
+        **best_bayes,
+        objective=XGB_OBJECTIVE,
+        eval_metric="mlogloss" if N_CLASSES > 2 else "logloss",
+        n_jobs=-1,
+        random_state=RANDOM_STATE,
+        tree_method="hist",
+        verbosity=0,
+        num_class=N_CLASSES if N_CLASSES > 2 else None
+    ))
+])
+
+# ========== 2) MANUAL 5-FOLD CV (SAMPLER + PLATT, NO LEAKAGE) ==========
+metrics = {'accuracy': [], 'precision': [], 'recall': [], 'f1': []}
+conf_matrices = {'train': [], 'test_cv': []}
+train_preds = []
+test_cv_preds = []
+train_class_reports = []
+test_cv_class_reports = []
+
+calibration_metrics = {'train': [], 'test_cv': []}
+
+# Permutation importance distributions across folds (outer test only)
+perm_distributions = {f: [] for f in features}
+
+for fold, (ti, vi) in enumerate(cv.split(X, y_enc), 1):
+    X_tr, X_te = X.iloc[ti], X.iloc[vi]
+    y_tr, y_te = y_enc[ti], y_enc[vi]
+    lakecode_tr = lakecode.iloc[ti].reset_index(drop=True)
+    lakecode_te = lakecode.iloc[vi].reset_index(drop=True)
+
+    # --- Apply ADVANCED SAMPLER (TRAIN ONLY) ---
+    if SAMPLER_TYPE == "mwmote":
+        X_tr_bal, y_tr_bal = apply_mwmote_multiclass(
+            X_tr, y_tr,
+            imbalance_ratio=IMBALANCE_RATIO,
+            random_state=RANDOM_STATE
+        )
+        lakecode_tr_bal = list(lakecode_tr) + [
+            'S' + str(lakecode_tr.iloc[i % len(lakecode_tr)])
+            for i in range(len(y_tr_bal) - len(y_tr))
+        ]
+        is_synthetic_tr_bal = [False] * len(y_tr) + [True] * (len(y_tr_bal) - len(y_tr))
+
+    else:
+        sampler_obj = get_sampler(SAMPLER_TYPE, K_NEIGHBORS, RANDOM_STATE)
+        if sampler_obj is not None:
+            X_tr_bal, y_tr_bal = sampler_obj.fit_resample(X_tr, y_tr)
+            lakecode_tr_bal = list(lakecode_tr) + [
+                'S' + str(lakecode_tr.iloc[i % len(lakecode_tr)])
+                for i in range(len(y_tr_bal) - len(y_tr))
+            ]
+            is_synthetic_tr_bal = [False] * len(y_tr) + [True] * (len(y_tr_bal) - len(y_tr))
+        else:
+            X_tr_bal, y_tr_bal = X_tr, y_tr
+            lakecode_tr_bal = list(lakecode_tr)
+            is_synthetic_tr_bal = [False] * len(y_tr_bal)
+
+    # --- Fit calibrated model WITHOUT leakage ---
+    # Calibration happens only within training data (inner CV)
+    base_pipe = clone(best_pipe)
+    calib = make_calibrator(estimator=base_pipe, method='sigmoid', cv_inner=3)
+    calib.fit(X_tr_bal, y_tr_bal)
+
+    # --- Predict on balanced train data ---
+    y_pred_tr = calib.predict(X_tr_bal)
+    y_proba_tr = calib.predict_proba(X_tr_bal)
+
+    df_tr = pd.DataFrame(X_tr_bal, columns=features)
+    df_tr['actual'] = le.inverse_transform(y_tr_bal)
+    df_tr['pred'] = le.inverse_transform(y_pred_tr)
+    df_tr['fold'] = fold
+    df_tr['LakeCode'] = lakecode_tr_bal
+    for idx, cls in enumerate(calib.classes_):
+        df_tr[f'proba_{le.inverse_transform([cls])[0]}'] = y_proba_tr[:, idx]
+    df_tr['is_synthetic'] = is_synthetic_tr_bal
+    train_preds.append(df_tr)
+
+    # --- Predict on OUTER validation fold (true CV test) ---
+    y_pred_te = calib.predict(X_te)
+    y_proba_te = calib.predict_proba(X_te)
+
+    df_te = X_te.copy()
+    df_te['actual'] = le.inverse_transform(y_te)
+    df_te['pred'] = le.inverse_transform(y_pred_te)
+    df_te['fold'] = fold
+    df_te['LakeCode'] = lakecode_te.values
+    for idx, cls in enumerate(calib.classes_):
+        df_te[f'proba_{le.inverse_transform([cls])[0]}'] = y_proba_te[:, idx]
+    df_te['is_synthetic'] = False
+    test_cv_preds.append(df_te)
+
+    # Metrics (test, train)
+    metrics['accuracy'].append((accuracy_score(y_te, y_pred_te),
+                                accuracy_score(y_tr_bal, y_pred_tr)))
+    metrics['precision'].append((
+        precision_score(y_te, y_pred_te, average='macro', zero_division=0),
+        precision_score(y_tr_bal, y_pred_tr, average='macro', zero_division=0)
+    ))
+    metrics['recall'].append((
+        recall_score(y_te, y_pred_te, average='macro', zero_division=0),
+        recall_score(y_tr_bal, y_pred_tr, average='macro', zero_division=0)
+    ))
+    metrics['f1'].append((
+        f1_score(y_te, y_pred_te, average='macro', zero_division=0),
+        f1_score(y_tr_bal, y_pred_tr, average='macro', zero_division=0)
+    ))
+
+    conf_matrices['test_cv'].append(confusion_matrix(y_te, y_pred_te, labels=calib.classes_))
+    conf_matrices['train'].append(confusion_matrix(y_tr_bal, y_pred_tr, labels=calib.classes_))
+
+    # Calibration metrics
+    ece_tr = multiclass_ece(y_tr_bal, y_proba_tr)
+    brier_tr = multiclass_brier_score(y_tr_bal, y_proba_tr)
+    ece_te = multiclass_ece(y_te, y_proba_te)
+    brier_te = multiclass_brier_score(y_te, y_proba_te)
+    calibration_metrics['train'].append((ece_tr, brier_tr))
+    calibration_metrics['test_cv'].append((ece_te, brier_te))
+
+    # Classification reports
+    rpt_cv_te = classification_report(
+        le.inverse_transform(y_te),
+        le.inverse_transform(y_pred_te),
+        output_dict=True, zero_division=0
+    )
+    rpt_cv_tr = classification_report(
+        le.inverse_transform(y_tr_bal),
+        le.inverse_transform(y_pred_tr),
+        output_dict=True, zero_division=0
+    )
+
+    df_rpt_te = pd.DataFrame(rpt_cv_te).T.reset_index().rename(columns={'index': 'class'})
+    df_rpt_te['fold'] = fold
+    df_rpt_te['dataset'] = 'test_cv'
+
+    df_rpt_tr = pd.DataFrame(rpt_cv_tr).T.reset_index().rename(columns={'index': 'class'})
+    df_rpt_tr['fold'] = fold
+    df_rpt_tr['dataset'] = 'train'
+
+    test_cv_class_reports.append(df_rpt_te)
+    train_class_reports.append(df_rpt_tr)
+
+    # --- Permutation importance on OUTER TEST FOLD ONLY (100 repeats) ---
+    perm = permutation_importance(
+        calib, X_te, y_te,
+        n_repeats=PERM_REPEATS,
+        scoring='f1_macro',
+        random_state=RANDOM_STATE + fold,  # small improvement: different seed per fold
+        n_jobs=-1
+    )
+    for j, feat in enumerate(features):
+        perm_distributions[feat].extend(list(perm.importances[j]))
+
+# ========== 3) FINAL MODEL TRAINED ON ALL DATA (REFERENCE) ==========
+base_final = clone(best_pipe)
+final_clf = make_calibrator(estimator=base_final, method='sigmoid', cv_inner=5)
+final_clf.fit(X, y_enc)
+
+y_full_pred = final_clf.predict(X)
+y_full_pred_labels = le.inverse_transform(y_full_pred)
+proba_full = final_clf.predict_proba(X)
+
+ece_full = multiclass_ece(y_enc, proba_full)
+brier_full = multiclass_brier_score(y_enc, proba_full)
+
+full_data_metrics = {
+    'accuracy':  accuracy_score(y_enc, y_full_pred),
+    'precision': precision_score(y_enc, y_full_pred, average='macro', zero_division=0),
+    'recall':    recall_score(y_enc, y_full_pred, average='macro', zero_division=0),
+    'f1':        f1_score(y_enc, y_full_pred, average='macro', zero_division=0),
+    'ece':       ece_full,
+    'brier':     brier_full
+}
+
+cm_full = confusion_matrix(y_enc, y_full_pred, labels=final_clf.classes_)
+
+df_full = X.copy()
+df_full['actual'] = y
+df_full['pred'] = y_full_pred_labels
+df_full['LakeCode'] = lakecode
+for idx, cls in enumerate(final_clf.classes_):
+    df_full[f'proba_{le.inverse_transform([cls])[0]}'] = proba_full[:, idx]
+df_full['is_synthetic'] = False
+
+# ========== PERMUTATION SUMMARY WITH 95% CI ==========
+perm_ci_rows = []
+for feat in features:
+    vals = np.array(perm_distributions[feat], dtype=float)  # folds * repeats
+    mean_imp = float(np.mean(vals))
+    lo = float(np.quantile(vals, CI_ALPHA/2))
+    hi = float(np.quantile(vals, 1 - CI_ALPHA/2))
+    perm_ci_rows.append({
+        "feature": feat,
+        "importance_mean": mean_imp,
+        "ci95_low": lo,
+        "ci95_high": hi,
+        "n_values": len(vals)
+    })
+perm_cv_ci_df = pd.DataFrame(perm_ci_rows).sort_values("importance_mean", ascending=False)
+
+# ========== 4) SAVE RESULTS TO EXCEL ==========
+with pd.ExcelWriter(excel_path, engine='xlsxwriter') as writer:
+    # Optuna trials
+    trials_df = study.trials_dataframe()
+    trials_df.to_excel(writer, 'optuna_trials', index=False)
+
+    # Metrics summary
+    metrics_summary_df = pd.DataFrame.from_dict({
+        m: {
+            'test_mean':  np.mean([x[0] for x in metrics[m]]),
+            'test_std':   np.std([x[0] for x in metrics[m]]),
+            'train_mean': np.mean([x[1] for x in metrics[m]]),
+            'train_std':  np.std([x[1] for x in metrics[m]])
+        } for m in metrics
+    }, orient='index')
+    metrics_summary_df.to_excel(writer, 'metrics_summary')
+
+    # Calibration summary
+    calibration_summary = {
+        'test_cv': {
+            'ece_mean':   np.mean([e for e, b in calibration_metrics['test_cv']]),
+            'ece_std':    np.std([e for e, b in calibration_metrics['test_cv']]),
+            'brier_mean': np.mean([b for e, b in calibration_metrics['test_cv']]),
+            'brier_std':  np.std([b for e, b in calibration_metrics['test_cv']])
+        },
+        'train': {
+            'ece_mean':   np.mean([e for e, b in calibration_metrics['train']]),
+            'ece_std':    np.std([e for e, b in calibration_metrics['train']]),
+            'brier_mean': np.mean([b for e, b in calibration_metrics['train']]),
+            'brier_std':  np.std([b for e, b in calibration_metrics['train']])
+        }
+    }
+    pd.DataFrame.from_dict(calibration_summary, orient='index').to_excel(
+        writer, 'calibration_summary'
+    )
+
+    # Average confusion matrices (CV)
+    pd.DataFrame(
+        sum(conf_matrices['test_cv']) / len(conf_matrices['test_cv']),
+        columns=class_names, index=class_names
+    ).to_excel(writer, 'confusion_cv_test', index=True)
+
+    pd.DataFrame(
+        sum(conf_matrices['train']) / len(conf_matrices['train']),
+        columns=class_names, index=class_names
+    ).to_excel(writer, 'confusion_cv_train', index=True)
+
+    # Classification reports
+    pd.concat(train_class_reports).to_excel(writer, 'cv_train_class_report', index=False)
+    pd.concat(test_cv_class_reports).to_excel(writer, 'cv_test_class_report', index=False)
+
+    # Full-data evaluation (reference)
+    pd.DataFrame([full_data_metrics]).to_excel(writer, 'evaluation_full_data', index=False)
+    pd.DataFrame(cm_full, columns=class_names, index=class_names).to_excel(
+        writer, 'confusion_full_data', index=True
+    )
+
+    # Predictions
+    pd.concat(train_preds).to_excel(writer, 'cv_train_predictions', index=False)
+    pd.concat(test_cv_preds).to_excel(writer, 'cv_test_predictions', index=False)
+    df_full.to_excel(writer, 'predictions_full_data', index=False)
+
+    # Permutation importance (CV test folds only) with 95% CI
+    perm_cv_ci_df.to_excel(writer, 'perm_importance_cv_ci95', index=False)
+
+print(f"\n✅ Done. Results saved under: {excel_path}")
+print(f"Output folder: {output_base}")
+
+# ========== 5) PLOTS ==========
+# Average CV test confusion matrix
+fig, ax = plt.subplots(figsize=(6, 6))
+cm_cv = sum(conf_matrices['test_cv']) / len(conf_matrices['test_cv'])
+im = ax.matshow(cm_cv, cmap='Blues')
+plt.colorbar(im, ax=ax)
+ax.set_xticks(range(len(class_names)))
+ax.set_yticks(range(len(class_names)))
+ax.set_xticklabels(class_names, rotation=45)
+ax.set_yticklabels(class_names)
+for i in range(cm_cv.shape[0]):
+    for j in range(cm_cv.shape[1]):
+        ax.text(j, i, f"{cm_cv[i, j]:.1f}", va='center', ha='center')
+plt.title('CV Test Confusion Matrix (avg)')
+plt.tight_layout()
+plt.savefig(os.path.join(output_base, 'cm_cv_test.png'))
+plt.close()
+
+# Full-data confusion matrix
+fig, ax = plt.subplots(figsize=(6, 6))
+im = ax.matshow(cm_full, cmap='Blues')
+plt.colorbar(im, ax=ax)
+ax.set_xticks(range(len(class_names)))
+ax.set_yticks(range(len(class_names)))
+ax.set_xticklabels(class_names, rotation=45)
+ax.set_yticklabels(class_names)
+for i in range(cm_full.shape[0]):
+    for j in range(cm_full.shape[1]):
+        ax.text(j, i, f"{cm_full[i, j]}", va='center', ha='center')
+plt.title('Full Data Confusion Matrix (train fit)')
+plt.tight_layout()
+plt.savefig(os.path.join(output_base, 'cm_full.png'))
+plt.close()
