@@ -223,17 +223,12 @@ The machine learning framework achieved robust national-scale classification per
 
 ## 🔹 Feature Importance (SHAP Analysis)
 
-![SHAP Results](figures/figure7.png)
+![SHAP Results](figures/fig2.png)
 
-*Figure 2. SHAP summary plots showing dominant environmental drivers of ecological status classification.*
+*Figure 2. Feature importance analysis showing dominant environmental drivers of ecological status classification. Panel (a) presents the Permutation Importance results. Panels (b) and (c) display SHAP summary plots derived from the XGBoost and TabNet models, respectively. Abbreviations: TP (Total Phosphorus), TN (Total Nitrogen), MD (Maximum Depth), WC (Water Color), SD (Secchi Depth), WT (Water Temperature), and DO (Dissolved Oxygen). *
 
 --- 
 
-## 🔹 Uncertainty Decomposition
-
-![Uncertainty Decomposition](figures/figure8.png)
-
-*Figure 3. Decomposition of predictive uncertainty into aleatoric and epistemic components.*
 
 ---
 
