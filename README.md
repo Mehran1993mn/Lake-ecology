@@ -184,7 +184,7 @@ Supervised Machine Learning and Deep Learning classification framework.
 | `LICENSE` | Project license (MIT) |
 | `.gitignore` | Specifies files ignored by Git |
 | `figures/` | Figures used in the manuscript and README |
-| `code/` | Core Python scripts for preprocessing and modeling and XGBoost modeling scripts and related outputs |
+| `xgboost/` | Core Python scripts for preprocessing and modeling and XGBoost modeling scripts and related outputs |
 
 
 ---
