@@ -287,13 +287,4 @@ This repository emphasizes:
 - Uncertainty-aware environmental decision support
 - Clear scientific communication
 
-For Markdown formatting reference:
 
-[Markdown Cheatsheet](https://github.com/adam-p/markdown-here/wiki/markdown-cheatsheet)
-
-
-### ▶️ Run the Code
-
-```bash
-pip install -r requirements.txt
-python xgboost/your_script_name.py
