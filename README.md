@@ -254,19 +254,27 @@ See the `LICENSE` file for details.
 
 # 🤝 Contribution Guidelines
 
-Contributions that improve the quality, clarity, and reproducibility of this project are welcome.
+Contributions that improve the scientific quality, clarity, and reproducibility of this project are welcome.
 
-Please follow these guidelines:
+Because this repository supports research on machine learning–based ecological status classification of lakes (WFD framework), special care must be taken to preserve reproducibility and result integrity.
 
-- Open an issue before making major or result-affecting changes
-- Keep pull requests focused and clearly describe changes
-- Follow existing code style and documentation standards
-- Do not modify code or data used to reproduce published results without discussion
-- Ensure workflows remain reproducible (fixed seeds, documented dependencies)
-- Do not commit large or restricted datasets
-- Respect external data licenses (e.g., SYKE data policy)
+Please follow these principles:
 
-By contributing, you agree that your work will be released under the project’s license.
+* Open an issue before making major methodological or result-affecting changes.
+* Keep pull requests focused and clearly describe what changed and why.
+* Do not modify scripts used to reproduce published or reported results without prior discussion.
+* Preserve reproducibility:
+  - Keep random seeds fixed.
+  - Document hyperparameter changes.
+  - Update environment/dependency files if needed.
+* Clearly separate:
+  - Experimental code
+  - Production-ready scripts
+  - Visualization or exploratory notebooks
+* Do not commit raw or restricted datasets (e.g., SYKE data).
+* Respect all data licenses and ethical guidelines.
+
+By contributing, you agree that your work will be released under the project's license.
 
 ---
 
